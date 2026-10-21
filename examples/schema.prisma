@@ -1,0 +1,259 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ============================================================================
+// 1. REFERENCE AND GEOGRAPHICAL MODELS
+// ============================================================================
+
+model RefMajorSubdivision {
+  subdivisionCode String  @id @db.VarChar(10) @map("subdivision_code") // NGA, LGU, SUC, GOCC, LWD
+  subdivisionName String  @db.VarChar(100) @map("subdivision_name")
+  description     String? @db.Text
+  isActive        Boolean @default(true) @map("is_active")
+
+  // Relations
+  agencies Agency[]
+
+  @@map("ref_major_subdivisions")
+}
+
+model RefRegion {
+  regionId         Int     @id @default(autoincrement()) @map("region_id")
+  regionCode       String  @unique @db.VarChar(20) @map("region_code") // NCR, CAR, REGION_1 to 12, Caraga, BARMM
+  regionName       String  @db.VarChar(100) @map("region_name")
+  geographicIsland String? @db.VarChar(20) @map("geographic_island") // Luzon, Visayas, Mindanao
+  sortOrder        Int?    @map("sort_order")
+  isActive         Boolean @default(true) @map("is_active")
+
+  // Relations
+  provinces            RefProvince[]
+  citiesMunicipalities RefCityMunicipality[]
+  agencyOrgUnits       AgencyOrgUnit[]
+
+  @@map("ref_regions")
+}
+
+model RefProvince {
+  provinceId   Int     @id @default(autoincrement()) @map("province_id")
+  regionId     Int     @map("region_id")
+  provinceCode String? @unique @db.VarChar(20) @map("province_code")
+  provinceName String  @db.VarChar(100) @map("province_name")
+  isActive     Boolean @default(true) @map("is_active")
+
+  // Relations
+  region               RefRegion             @relation(fields: [regionId], references: [regionId], onDelete: Restrict)
+  citiesMunicipalities RefCityMunicipality[]
+  agencyOrgUnits       AgencyOrgUnit[]
+
+  @@map("ref_provinces")
+}
+
+model RefCityMunicipality {
+  cityMunId       Int     @id @default(autoincrement()) @map("city_mun_id")
+  provinceId      Int?    @map("province_id") // Nullable for highly urbanized/chartered cities
+  regionId        Int     @map("region_id")
+  cityMunCode     String? @unique @db.VarChar(20) @map("city_mun_code")
+  cityMunName     String  @db.VarChar(100) @map("city_mun_name")
+  isCharteredCity Boolean @default(false) @map("is_chartered_city")
+  isActive        Boolean @default(true) @map("is_active")
+
+  // Relations
+  province       RefProvince?    @relation(fields: [provinceId], references: [provinceId], onDelete: Restrict)
+  region         RefRegion       @relation(fields: [regionId], references: [regionId], onDelete: Restrict)
+  agencyOrgUnits AgencyOrgUnit[]
+
+  @@map("ref_cities_municipalities")
+}
+
+model RefOrgUnitType {
+  unitTypeId      Int     @id @default(autoincrement()) @map("unit_type_id")
+  typeCode        String  @unique @db.VarChar(50) @map("type_code") // CENTRAL_OFFICE, REGIONAL_OFFICE, SDO, CAMPUS, DEPT
+  typeName        String  @db.VarChar(100) @map("type_name")
+  description     String? @db.VarChar(255)
+  hierarchyLevel  Int?    @map("hierarchy_level")
+  isFieldUnit     Boolean @default(false) @map("is_field_unit")
+  isActive        Boolean @default(true) @map("is_active")
+
+  // Relations
+  agencyOrgUnits AgencyOrgUnit[]
+
+  @@map("ref_org_unit_types")
+}
+
+// ============================================================================
+// 2. DYNAMIC AGENCY HIERARCHY ENGINE
+// ============================================================================
+
+model Agency {
+  agencyId        Int       @id @default(autoincrement()) @map("agency_id")
+  subdivisionCode String    @db.VarChar(10) @map("subdivision_code")
+  parentAgencyId  Int?      @map("parent_agency_id") // Self-reference for attached agencies/commissions
+  agencyCode      String    @unique @db.VarChar(50) @map("agency_code") // DEPED, DPWH, PUP, CSC
+  agencyName      String    @db.VarChar(255) @map("agency_name")
+  acronym         String?   @db.VarChar(30)
+  websiteUrl      String?   @db.VarChar(255) @map("website_url")
+  isActive        Boolean   @default(true) @map("is_active")
+  createdAt       DateTime  @default(now()) @db.Timestamptz @map("created_at")
+  updatedAt       DateTime? @updatedAt @db.Timestamptz @map("updated_at")
+
+  // Relations
+  subdivision      RefMajorSubdivision @relation(fields: [subdivisionCode], references: [subdivisionCode], onDelete: Restrict)
+  parentAgency     Agency?             @relation("AttachedAgencyHierarchy", fields: [parentAgencyId], references: [agencyId], onDelete: SetNull)
+  attachedAgencies Agency[]            @relation("AttachedAgencyHierarchy")
+  orgUnits         AgencyOrgUnit[]
+
+  @@map("agencies")
+}
+
+model AgencyOrgUnit {
+  orgUnitId        BigInt    @id @default(autoincrement()) @map("org_unit_id")
+  agencyId         Int       @map("agency_id")
+  parentUnitId     BigInt?   @map("parent_unit_id") // Self-referential Adjacency: NULL for Apex/Central Office
+  unitTypeId       Int       @map("unit_type_id")
+  regionId         Int?      @map("region_id")
+  provinceId       Int?      @map("province_id")
+  cityMunId        Int?      @map("city_mun_id")
+  unitCode         String?   @db.VarChar(50) @map("unit_code")
+  unitName         String    @db.VarChar(255) @map("unit_name")
+  acronym          String?   @db.VarChar(50)
+  hierarchyDepth   Int       @default(1) @map("hierarchy_depth")
+  materializedPath String    @db.Text @map("materialized_path") // Dot/slash lineage index: e.g. "1/4/29/"
+  contactEmail     String?   @db.VarChar(150) @map("contact_email")
+  isActive         Boolean   @default(true) @map("is_active")
+  createdAt        DateTime  @default(now()) @db.Timestamptz @map("created_at")
+  updatedAt        DateTime? @updatedAt @db.Timestamptz @map("updated_at")
+
+  // Relations
+  agency              Agency                      @relation(fields: [agencyId], references: [agencyId], onDelete: Cascade)
+  parentUnit          AgencyOrgUnit?              @relation("UnitAdjacencyHierarchy", fields: [parentUnitId], references: [orgUnitId], onDelete: Cascade)
+  subordinateUnits    AgencyOrgUnit[]             @relation("UnitAdjacencyHierarchy")
+  unitType            RefOrgUnitType              @relation(fields: [unitTypeId], references: [unitTypeId], onDelete: Restrict)
+  region              RefRegion?                  @relation(fields: [regionId], references: [regionId], onDelete: SetNull)
+  province            RefProvince?                @relation(fields: [provinceId], references: [provinceId], onDelete: SetNull)
+  cityMunicipality    RefCityMunicipality?        @relation(fields: [cityMunId], references: [cityMunId], onDelete: SetNull)
+
+  // Transitive Closure Relations
+  closureAncestors    AgencyOrgUnitClosure[]      @relation("ClosureDescendant")
+  closureDescendants  AgencyOrgUnitClosure[]      @relation("ClosureAncestor")
+
+  // Fact metrics
+  workforceInventories OrgUnitWorkforceInventory[]
+
+  @@index([agencyId, parentUnitId], map: "idx_org_units_agency_parent")
+  @@index([materializedPath], map: "idx_org_units_path")
+  @@index([regionId], map: "idx_org_units_region")
+  @@map("agency_org_units")
+}
+
+model AgencyOrgUnitClosure {
+  ancestorId   BigInt @map("ancestor_id")
+  descendantId BigInt @map("descendant_id")
+  depth        Int
+
+  // Relations
+  ancestor   AgencyOrgUnit @relation("ClosureAncestor", fields: [ancestorId], references: [orgUnitId], onDelete: Cascade)
+  descendant AgencyOrgUnit @relation("ClosureDescendant", fields: [descendantId], references: [orgUnitId], onDelete: Cascade)
+
+  @@id([ancestorId, descendantId])
+  @@index([descendantId], map: "idx_closure_descendant")
+  @@map("agency_org_unit_closure")
+}
+
+// ============================================================================
+// 3. WORKFORCE FACT INVENTORY (IGHR METRICS)
+// ============================================================================
+
+model OrgUnitWorkforceInventory {
+  inventoryId   BigInt   @id @default(autoincrement()) @map("inventory_id")
+  orgUnitId     BigInt   @map("org_unit_id")
+  reportingDate DateTime @db.Date @map("reporting_date")
+
+  // Career Service (1st, 2nd, Third Level)
+  career1stLevelCount       Int @default(0) @map("career_1st_level_count")
+  career2ndLevelStaffCount  Int @default(0) @map("career_2nd_level_staff_count")
+  career2ndLevelExecCount   Int @default(0) @map("career_2nd_level_exec_count")
+  careerThirdLevelCount     Int @default(0) @map("career_third_level_count")
+
+  // Non-Career Service
+  nonCareerCasualCount      Int @default(0) @map("non_career_casual_count")
+  nonCareerContractualCount Int @default(0) @map("non_career_contractual_count")
+  nonCareerCoterminousCount Int @default(0) @map("non_career_coterminous_count")
+  nonCareerElectiveCount    Int @default(0) @map("non_career_elective_count")
+  nonCareerFixedTermCount   Int @default(0) @map("non_career_fixed_term_count")
+
+  // Flexible / Non-Plantilla Personnel
+  joCount  Int @default(0) @map("jo_count")
+  cosCount Int @default(0) @map("cos_count")
+  moaCount Int @default(0) @map("moa_count")
+
+  // Plantilla Vacancies
+  vacantPlantillaCount Int @default(0) @map("vacant_plantilla_count")
+
+  // Demographics and Equity Indicators
+  pwdCount         Int       @default(0) @map("pwd_count")
+  ipCount          Int       @default(0) @map("ip_count")
+  maleTotalCount   Int       @default(0) @map("male_total_count")
+  femaleTotalCount Int       @default(0) @map("female_total_count")
+
+  // Audit Trails
+  lastSubmittedAt DateTime? @db.Timestamptz @map("last_submitted_at")
+  createdAt       DateTime  @default(now()) @db.Timestamptz @map("created_at")
+
+  // Relations
+  orgUnit AgencyOrgUnit @relation(fields: [orgUnitId], references: [orgUnitId], onDelete: Cascade)
+
+  @@unique([orgUnitId, reportingDate], map: "uq_unit_period")
+  @@map("org_unit_workforce_inventory")
+}
+
+// ============================================================================
+// 4. STANDALONE MODELS (NO FOREIGN KEY CONSTRAINTS)
+// ============================================================================
+
+model SysApplicationSetting {
+  configId    Int      @id @default(autoincrement()) @map("config_id")
+  configKey   String   @unique @db.VarChar(100) @map("config_key")
+  configValue String   @db.Text @map("config_value")
+  category    String?  @db.VarChar(50)
+  description String?  @db.VarChar(255)
+  isEncrypted Boolean  @default(false) @map("is_encrypted")
+  updatedAt   DateTime @updatedAt @db.Timestamptz @map("updated_at")
+
+  @@map("sys_application_settings")
+}
+
+model SysDataIngestionLog {
+  logId                BigInt   @id @default(autoincrement()) @map("log_id")
+  batchReferenceNumber String?  @db.VarChar(100) @map("batch_reference_number")
+  sourceFilename       String   @db.VarChar(255) @map("source_filename")
+  recordsProcessed     Int      @default(0) @map("records_processed")
+  recordsSucceeded     Int      @default(0) @map("records_succeeded")
+  recordsFailed        Int      @default(0) @map("records_failed")
+  ingestionStatus      String   @db.VarChar(30) @map("ingestion_status") // SUCCESS, PARTIAL_FAIL, FAILED
+  errorPayload         String?  @db.Text @map("error_payload")
+  executedBy           String?  @db.VarChar(100) @map("executed_by")
+  executionTimestamp   DateTime @default(now()) @db.Timestamptz @map("execution_timestamp")
+
+  @@map("sys_data_ingestion_logs")
+}
+
+model NationalWorkforceBenchmark {
+  benchmarkId            Int       @id @default(autoincrement()) @map("benchmark_id")
+  benchmarkYear          Int       @map("benchmark_year")
+  referenceDate          DateTime  @db.Date @map("reference_date") // e.g., 2026-06-30
+  totalNationalWorkforce BigInt    @map("total_national_workforce") // 3,294,977
+  totalCareerCount       BigInt    @map("total_career_count") // 2,021,802
+  totalNonCareerCount    BigInt    @map("total_non_career_count") // 232,771
+  totalJoCosMoaCount     BigInt    @map("total_jo_cos_moa_count") // 1,038,284
+  totalVacantPositions   BigInt    @map("total_vacant_positions") // 224,999
+  nationalVacancyRate    Decimal   @db.Decimal(5, 2) @map("national_vacancy_rate") // 9.78%
+  publishedDate          DateTime? @db.Date @map("published_date")
+
+  @@map("national_workforce_benchmarks")
+}
